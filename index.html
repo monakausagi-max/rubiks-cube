@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<title>ルービックキューブ 2〜6段</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="theme-color" content="#17181f">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<style>
+:root{--bg:#17181f;--fg:#ecebf2;--mut:#a3a2b3;--pn:#23252f;--ln:#3d4050}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;overflow:hidden;overscroll-behavior:none}
+body{display:flex;flex-direction:column;padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom);background:radial-gradient(120% 90% at 50% 38%,#2c2f3e,var(--bg) 70%);color:var(--fg);font:500 15px/1.4 "Hiragino Sans","Yu Gothic UI","Noto Sans JP",system-ui,sans-serif}
+header{display:flex;justify-content:space-between;align-items:baseline;padding:14px 18px 0}
+h1{font-size:20px;margin:0;font-weight:700}
+.st{color:var(--mut);font-variant-numeric:tabular-nums}
+#scene{flex:1;min-height:0;position:relative;perspective:1600px;touch-action:none;cursor:grab;user-select:none;-webkit-user-select:none}
+#cube{position:absolute;left:50%;top:50%;width:0;height:0;transform-style:preserve-3d}
+.c{position:absolute;transform-style:preserve-3d}
+.f{position:absolute;left:0;top:0;background:#101116;backface-visibility:hidden}
+.f.s{cursor:pointer}
+.f.s::after{content:"";position:absolute;inset:7%;background:var(--c);border-radius:18%}
+#msg{position:absolute;left:0;right:0;top:6%;text-align:center;font-size:24px;font-weight:700;pointer-events:none;opacity:0;transition:opacity .4s}
+#msg.on{opacity:1}
+footer{padding:8px 14px 16px;display:flex;flex-direction:column;gap:10px;align-items:center}
+.row{display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
+button{font:inherit;color:var(--fg);background:var(--pn);border:1px solid var(--ln);border-radius:999px;padding:10px 16px;min-height:44px;cursor:pointer}
+button:focus-visible{outline:2px solid #fff;outline-offset:2px}
+button[aria-pressed=true]{background:var(--fg);color:#17181f;border-color:var(--fg)}
+.sz button{min-width:48px;padding:10px 0}
+.hint{font-size:13px}
+@media (prefers-reduced-motion:reduce){#msg{transition:none}}
+</style>
+</head>
+<body>
+<header><h1 id="ttl">3×3×3</h1><div class="st"><span id="tm">0:00</span>　<span id="mv">0</span>手</div></header>
+<div id="scene"><div id="cube"></div><div id="msg">揃いました!</div></div>
+<footer>
+<div class="row sz" id="sz" role="group" aria-label="段数"></div>
+<div class="row"><button id="sh">シャッフル</button><button id="un">1手戻す</button><button id="rs">リセット</button></div>
+<div class="st hint">面をドラッグで回転・背景をドラッグで視点を動かす</div>
+</footer>
+<script>
+const NR=[[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
+const FT=['rotateY(90deg)','rotateY(-90deg)','rotateX(-90deg)','rotateX(90deg)','','rotateY(180deg)'];
+const COL=['#c8102e','#ff6a13','#ffd500','#f5f5f0','#00a651','#0057b8'];
+const I=[[1,0,0],[0,1,0],[0,0,1]],BASE=420;
+const $=s=>document.querySelector(s),cube=$('#cube'),scene=$('#scene');
+let N=3,S=140,cs=[],busy=false,armed=false,hist=[],moves=0,t0=0,tid=0,rx=-25,ry=-35,dr=null;
+
+const mul=(A,B)=>A.map(r=>[0,1,2].map(j=>r[0]*B[0][j]+r[1]*B[1][j]+r[2]*B[2][j]));
+const mvec=(A,v)=>A.map(r=>r[0]*v[0]+r[1]*v[1]+r[2]*v[2]);
+const rot=(a,d)=>[[[1,0,0],[0,0,-d],[0,d,0]],[[0,0,d],[0,1,0],[-d,0,0]],[[0,-d,0],[d,0,0],[0,0,1]]][a];
+const rnd=v=>v.map(x=>Math.round(x*2)/2);
+const mat=c=>{const R=c.R,p=c.p;return `matrix3d(${R[0][0]},${R[1][0]},${R[2][0]},0,${R[0][1]},${R[1][1]},${R[2][1]},0,${R[0][2]},${R[1][2]},${R[2][2]},0,${p[0]*S},${p[1]*S},${p[2]*S},1)`};
+const place=(c,pre='')=>{c.e.style.transform=pre+mat(c)};
+const ease=t=>t<.5?2*t*t:1-Math.pow(-2*t+2,2)/2;
+
+function applyView(){
+  const k=Math.min(innerWidth*.6,innerHeight*.42,BASE)/BASE;
+  cube.style.transform=`scale3d(${k},${k},${k}) rotateX(${rx}deg) rotateY(${ry}deg)`;
+}
+function build(n){
+  N=n;S=BASE/N;hist=[];moves=0;armed=false;stop();
+  $('#tm').textContent='0:00';$('#mv').textContent=0;$('#msg').classList.remove('on');
+  $('#ttl').textContent=`${N}×${N}×${N}`;
+  document.querySelectorAll('#sz button').forEach(b=>b.setAttribute('aria-pressed',+b.textContent===N));
+  cube.textContent='';cs=[];
+  const h=(N-1)/2,sz=S+'px';
+  for(let i=0;i<N;i++)for(let j=0;j<N;j++)for(let k=0;k<N;k++){
+    const c={p:[i-h,j-h,k-h],R:I.map(r=>r.slice()),f:[]},e=document.createElement('div');
+    e.className='c';e.style.cssText=`width:${sz};height:${sz};left:${-S/2}px;top:${-S/2}px`;
+    const q=[i,i,j,j,k,k],ex=[N-1,0,N-1,0,N-1,0];
+    for(let n=0;n<6;n++){
+      const f=document.createElement('div');f.className='f';
+      f.style.cssText=`width:${sz};height:${sz};transform:${FT[n]} translateZ(${S/2}px)`;
+      if(q[n]==ex[n]){f.classList.add('s');f.style.setProperty('--c',COL[n]);f.o=c;f.n=n;c.f.push(n)}
+      e.appendChild(f);
+    }
+    c.e=e;cs.push(c);cube.appendChild(e);place(c);
+  }
+  applyView();
+}
+function turn(a,lp,d,ms){
+  return new Promise(res=>{
+    const L=cs.filter(c=>Math.abs(c.p[a]-lp)<.1),t=performance.now(),ax='XYZ'[a];
+    (function f(now){
+      const u=Math.min(1,Math.max(0,(now-t)/ms)),g=ease(u)*d*90;
+      L.forEach(c=>place(c,`rotate${ax}(${g}deg) `));
+      if(u<1)requestAnimationFrame(f);
+      else{const M=rot(a,d);L.forEach(c=>{c.p=rnd(mvec(M,c.p));c.R=mul(M,c.R);place(c)});res()}
+    })(t);
+  });
+}
+function start(){t0=Date.now();tid=setInterval(tick,250)}
+function stop(){clearInterval(tid);tid=0}
+function tick(){const s=(Date.now()-t0)/1000|0;$('#tm').textContent=(s/60|0)+':'+String(s%60).padStart(2,'0')}
+function solved(){
+  const m={};
+  for(const c of cs)for(const n of c.f){const k=mvec(c.R,NR[n]).join();if(m[k]===undefined)m[k]=n;else if(m[k]!==n)return false}
+  return true;
+}
+async function userMove(a,lp,d){
+  if(busy)return;busy=true;
+  if(armed&&!tid)start();
+  await turn(a,lp,d,220);
+  hist.push([a,lp,d]);$('#mv').textContent=++moves;
+  busy=false;
+  if(armed&&solved()){armed=false;stop();tick();$('#msg').classList.add('on')}
+}
+async function shuffle(){
+  if(busy)return;busy=true;stop();hist=[];moves=0;
+  $('#mv').textContent=0;$('#tm').textContent='0:00';$('#msg').classList.remove('on');
+  const h=(N-1)/2;let last=-1;
+  for(let i=0;i<N*8+8;i++){
+    let a;do a=Math.random()*3|0;while(a===last&&Math.random()<.7);last=a;
+    await turn(a,(Math.random()*N|0)-h,Math.random()<.5?1:-1,N>4?60:80);
+  }
+  busy=false;armed=true;
+}
+async function undo(){
+  if(busy||!hist.length)return;busy=true;
+  const [a,lp,d]=hist.pop();await turn(a,lp,-d,180);
+  $('#mv').textContent=--moves;busy=false;
+}
+// 画面上のドラッグ方向から、回す軸・層・向きを決める
+function swipe(f,dx,dy){
+  const c=f.o,w=mvec(c.R,NR[f.n]),na=w.findIndex(v=>Math.abs(v)>.5);
+  const A=ry*Math.PI/180,B=rx*Math.PI/180;
+  const V=v=>{const x=v[0]*Math.cos(A)+v[2]*Math.sin(A),z=-v[0]*Math.sin(A)+v[2]*Math.cos(A);return[x,v[1]*Math.cos(B)-z*Math.sin(B)]};
+  let best=-1,bd=1,ba=0;
+  for(let a=0;a<3;a++){
+    if(a===na)continue;
+    const e=[0,0,0];e[a]=1;
+    const q=[e[1]*w[2]-e[2]*w[1],e[2]*w[0]-e[0]*w[2],e[0]*w[1]-e[1]*w[0]];
+    const p=V(q),s=dx*p[0]+dy*p[1];
+    if(Math.abs(s)>best){best=Math.abs(s);bd=s<0?-1:1;ba=a}
+  }
+  userMove(ba,c.p[ba],bd);
+}
+scene.addEventListener('pointerdown',e=>{
+  const f=e.target.closest&&e.target.closest('.f.s');
+  dr={x:e.clientX,y:e.clientY,f:f&&f.o?f:null,done:false};
+  scene.setPointerCapture(e.pointerId);
+});
+scene.addEventListener('pointermove',e=>{
+  if(!dr)return;
+  const dx=e.clientX-dr.x,dy=e.clientY-dr.y;
+  if(dr.f){
+    if(dr.done||busy||Math.hypot(dx,dy)<16)return;
+    dr.done=true;swipe(dr.f,dx,dy);
+  }else{
+    ry+=dx*.45;rx=Math.max(-89,Math.min(89,rx-dy*.45));
+    dr.x=e.clientX;dr.y=e.clientY;applyView();
+  }
+});
+['pointerup','pointercancel'].forEach(t=>scene.addEventListener(t,()=>{dr=null}));
+addEventListener('resize',applyView);
+
+for(let n=2;n<=6;n++){
+  const b=document.createElement('button');b.textContent=n;b.setAttribute('aria-label',`${n}段`);
+  b.onclick=()=>{if(!busy&&n!==N)build(n)};$('#sz').appendChild(b);
+}
+$('#sh').onclick=shuffle;$('#un').onclick=undo;$('#rs').onclick=()=>{if(!busy)build(N)};
+build(3);
+if('serviceWorker' in navigator&&location.protocol.startsWith('http'))navigator.serviceWorker.register('sw.js').catch(()=>{});
+</script>
+</body>
+</html>
